@@ -1,0 +1,11 @@
+{
+  "name": "mds221-2026-art-3",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "mock-ws": "node mock-server.js"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
+  }
+}
