@@ -14,7 +14,9 @@ let wsInput;
 let sourceLabelEl;
 let bpmLabelEl;
 let wsLabelEl;
+let debugPaneEl;
 let waveShader;
+let debugPaneVisible = true;
 
 const vertShader = `
 precision mediump float;
@@ -94,14 +96,15 @@ void main() {
   float hr = clamp(u_heartRate, 0.0, 1.0);
   float t = u_time;
   // 全局降速：保留心率驱动关系，但降低基础与峰值速度
-  float speed = 0.11 + hr * 0.28 + u_pulse * 0.08;
-  float amp = 0.06 + hr * 0.24 + u_pulse * 0.09;
+  float speed = 0.07 + hr * 0.16 + u_pulse * 0.08;
+  float amp = 0.06 + hr * 0.24 + u_pulse * 0.14;
+  float pulseKick = smoothstep(0.0, 1.0, u_pulse);
 
   // 流体扭曲：让阶梯条纹保持“水波”而不僵硬
   vec2 flow = vec2(
-    sin(uv.y * 7.0 + t * (1.0 + hr * 2.8)) * amp +
+    sin(uv.y * 7.0 + t * (0.65 + hr * 1.7)) * amp +
     (layeredNoise(uv * 3.5 + vec2(0.0, t * speed)) - 0.5) * amp * 1.4,
-    cos(uv.x * 6.0 - t * (0.9 + hr * 2.4)) * amp * 0.7 +
+    cos(uv.x * 6.0 - t * (0.55 + hr * 1.45)) * amp * 0.7 +
     (layeredNoise(uv * 4.2 + vec2(t * speed, 0.0)) - 0.5) * amp
   );
 
@@ -115,7 +118,13 @@ void main() {
     layeredNoise(uv * 2.0 + vec2(-t * 0.08, -t * 0.06))
   ) - 0.5;
 
-  vec2 p = (uv + flow + lowWarp * 0.75 + midWarp * 0.35) * (8.0 + hr * 6.0);
+  // 心跳脉冲：瞬时放大与轻微旋扭，制造“跳一下”的体感
+  float pulseScale = 1.0 + pulseKick * (0.10 + hr * 0.06);
+  float pulseTwist = pulseKick * (0.05 + hr * 0.04);
+  mat2 rot = mat2(cos(pulseTwist), -sin(pulseTwist), sin(pulseTwist), cos(pulseTwist));
+
+  vec2 p = rot * (uv + flow + lowWarp * 0.75 + midWarp * 0.35);
+  p *= (8.0 + hr * 6.0) * pulseScale;
 
   // 斜向坐标，构造参考图里的大方向
   vec2 r = vec2(
@@ -135,30 +144,32 @@ void main() {
   // 多频条纹：粗条 + 细条
   float bandWarp = (layeredNoise(r * 0.18 + vec2(t * 0.22, -t * 0.1)) - 0.5) * 3.2;
   float widthJitter = (layeredNoise(r * 0.26 + vec2(-t * 0.15, t * 0.17)) - 0.5) * 0.05;
-  float bandWide = softBand((ridgeCoord + bandWarp) * 0.26 + t * speed * 1.25, 0.14 - hr * 0.03 + widthJitter);
-  float bandFine = softBand((ridgeCoord - bandWarp * 0.6) * 0.62 - t * speed * 2.0, 0.08 - hr * 0.015 + widthJitter * 0.6);
+  float bandWide = softBand((ridgeCoord + bandWarp) * 0.26 + t * speed * 0.9, 0.14 - hr * 0.03 + widthJitter);
+  float bandFine = softBand((ridgeCoord - bandWarp * 0.6) * 0.62 - t * speed * 1.35, 0.08 - hr * 0.015 + widthJitter * 0.6);
   float verticalEcho = softBand((r.x * 0.35 - r.y * 0.05) * 0.55, 0.11);
 
-  // 暗横带，贴合参考图中的深色横向扫过
-  float darkSweep = 1.0 - smoothstep(0.0, 0.08, abs(sin(uv.y * 7.8 + t * 0.45)));
+  // 去除明显水平扫带，改为更自然的区域明暗起伏
+  float tonalNoise = layeredNoise(r * 0.11 + vec2(t * 0.06, -t * 0.04));
+  float darkSweep = smoothstep(0.15, 0.9, tonalNoise);
 
   float regionMask = smoothstep(0.2, 0.85, layeredNoise(r * 0.07 + vec2(12.0, 2.0)));
   float structure = bandWide * (0.5 + regionMask * 0.45) + bandFine * 0.42 + verticalEcho * (0.2 + (1.0 - regionMask) * 0.35);
   structure *= 0.92 + hr * 0.45;
   structure += (layeredNoise(r * 0.3 + vec2(t * 0.2, -t * 0.12)) - 0.5) * 0.15;
+  structure += pulseKick * 0.11;
   structure = clamp(structure, 0.0, 1.0);
 
-  float colorT = clamp(structure * 0.82 + bandFine * 0.2 - darkSweep * 0.1, 0.0, 1.0);
+  float colorT = clamp(structure * 0.82 + bandFine * 0.2 - (1.0 - darkSweep) * 0.08, 0.0, 1.0);
   vec3 baseColor = paletteColor(colorT);
 
   // 柔焦发光感
-  float glow = smoothstep(0.22, 1.0, structure) * (0.95 + hr * 0.6);
+  float glow = smoothstep(0.22, 1.0, structure) * (0.95 + hr * 0.6 + pulseKick * 0.55);
   vec3 color = baseColor * (0.48 + glow * 1.52);
   color += paletteColor(clamp(colorT + 0.2, 0.0, 1.0)) * bandFine * 0.3;
-  color *= 1.0 - darkSweep * 0.35;
+  color *= 0.78 + darkSweep * 0.22;
 
   // 亮度随合并心率变化：低心率更暗，高心率更亮
-  float brightness = mix(0.52, 1.28, hr);
+  float brightness = mix(0.52, 1.28, hr) + pulseKick * 0.16;
   float gammaLift = mix(1.22, 0.86, hr);
   color = pow(color, vec3(gammaLift)) * brightness;
 
@@ -177,9 +188,11 @@ function setup() {
   createCanvas(windowWidth, windowHeight, WEBGL);
   noStroke();
 
+  createDebugPane();
   sourceLabelEl = document.getElementById("sourceLabel");
   bpmLabelEl = document.getElementById("bpmLabel");
   wsLabelEl = document.getElementById("wsLabel");
+  debugPaneEl = document.getElementById("debugPane");
 
   simulator = new HeartRateSimulator();
   wsInput = new HeartRateWebSocket(WS_URL);
@@ -234,7 +247,8 @@ function updateHeartRate() {
       lastBeatMs = millis();
     }
   }
-  pulseEnvelope *= 0.9;
+  // 稍慢衰减，让脉冲动作更可见
+  pulseEnvelope *= 0.93;
 }
 
 function keyPressed() {
@@ -242,9 +256,46 @@ function keyPressed() {
     toggleSource();
   } else if (key === "k" || key === "K") {
     save("water-ripple.jpg");
+  } else if (key === "d" || key === "D") {
+    toggleDebugPane();
   } else if (key === " ") {
     paused = !paused;
   }
+}
+
+function toggleDebugPane() {
+  if (!debugPaneEl) return;
+  debugPaneVisible = !debugPaneVisible;
+  debugPaneEl.style.display = debugPaneVisible ? "block" : "none";
+}
+
+function createDebugPane() {
+  const existing = document.getElementById("debugPane");
+  if (existing) existing.remove();
+
+  const pane = document.createElement("div");
+  pane.id = "debugPane";
+  pane.style.position = "fixed";
+  pane.style.top = "10px";
+  pane.style.left = "10px";
+  pane.style.zIndex = "9999";
+  pane.style.padding = "10px";
+  pane.style.borderRadius = "8px";
+  pane.style.background = "rgba(0, 0, 0, 0.55)";
+  pane.style.color = "#f2d7dc";
+  pane.style.fontFamily = "Arial, sans-serif";
+  pane.style.fontSize = "14px";
+  pane.style.lineHeight = "1.4";
+  pane.style.pointerEvents = "none";
+  pane.innerHTML = `
+    <div>Source: <strong id="sourceLabel">simulation</strong></div>
+    <div>BPM: <strong id="bpmLabel">--</strong></div>
+    <div>WS: <strong id="wsLabel">disconnected</strong></div>
+    <div style="margin-top:6px; font-size:12px; opacity:0.85;">
+      W: source | K: save | Space: pause | D: debug
+    </div>
+  `;
+  document.body.appendChild(pane);
 }
 
 function toggleSource() {
