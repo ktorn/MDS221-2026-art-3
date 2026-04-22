@@ -152,10 +152,15 @@ void main() {
   vec3 baseColor = paletteColor(colorT);
 
   // 柔焦发光感
-  float glow = smoothstep(0.22, 1.0, structure) * (0.8 + hr * 0.5);
-  vec3 color = baseColor * (0.35 + glow * 1.35);
-  color += paletteColor(clamp(colorT + 0.2, 0.0, 1.0)) * bandFine * 0.22;
+  float glow = smoothstep(0.22, 1.0, structure) * (0.95 + hr * 0.6);
+  vec3 color = baseColor * (0.48 + glow * 1.52);
+  color += paletteColor(clamp(colorT + 0.2, 0.0, 1.0)) * bandFine * 0.3;
   color *= 1.0 - darkSweep * 0.35;
+
+  // 亮度随合并心率变化：低心率更暗，高心率更亮
+  float brightness = mix(0.52, 1.28, hr);
+  float gammaLift = mix(1.22, 0.86, hr);
+  color = pow(color, vec3(gammaLift)) * brightness;
 
   // 仅保留极弱边缘衰减，避免出现明显黑边
   float edgeFade = smoothstep(1.7, 0.05, length(screenUV));
@@ -209,7 +214,16 @@ function draw() {
 }
 
 function updateHeartRate() {
-  const nextBpm = bpmSource === "simulation" ? simulator.getValue() : wsInput.getValue(currentBpm);
+  let nextBpm;
+  if (bpmSource === "simulation") {
+    const simulated = simulator.getValue();
+    const mouseControlled = map(mouseX, 0, width, 0, 400, true);
+    // 在 simulation 模式下，按住鼠标可手动控制合并心率
+    nextBpm = mouseIsPressed ? mouseControlled : simulated;
+  } else {
+    nextBpm = wsInput.getValue(currentBpm);
+  }
+
   currentBpm = constrain(nextBpm, 0, 400);
   smoothedBpm = lerp(smoothedBpm, currentBpm, 0.08);
 
