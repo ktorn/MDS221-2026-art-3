@@ -1,8 +1,59 @@
-const WS_URL = "ws://localhost:8080";
+const APP_SECRETS = window.APP_SECRETS || {};
+const REGISTRY_BASE_URL =
+  APP_SECRETS.registryBaseUrl || "https://esp-device-registry.ktorn.workers.dev";
+const DEFAULT_DEVICE_ID = APP_SECRETS.deviceId || "MDS221-2026-3";
 
-let currentBpm = 140;
-let smoothedBpm = 140;
-let bpmSource = "simulation";
+function readUrlConfig() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    deviceId: params.get("deviceId") || DEFAULT_DEVICE_ID,
+    token: params.get("token") || APP_SECRETS.registryToken || null,
+    registry: params.get("registry") || REGISTRY_BASE_URL,
+    ws: params.get("ws"),
+    wsHost: params.get("wsHost"),
+    wsPort: params.get("wsPort") || "81",
+  };
+}
+
+function hasDirectWs(config) {
+  return !!(config.ws || config.wsHost);
+}
+
+function needsRegistryLookup(config) {
+  return !hasDirectWs(config) && !!(config.deviceId && config.token);
+}
+
+async function lookupDeviceEndpoint(config) {
+  const base = config.registry.replace(/\/$/, "");
+  const url = new URL(`${base}/lookup`);
+  url.searchParams.set("device_id", config.deviceId);
+  url.searchParams.set("token", config.token);
+
+  const res = await fetch(url.toString());
+  if (!res.ok) {
+    throw new Error(`lookup ${res.status}`);
+  }
+  const data = await res.json();
+  if (!data.lan_ip) throw new Error("no lan_ip");
+  const port = data.ws_port || 81;
+  return `ws://${data.lan_ip}:${port}`;
+}
+
+const URL_CONFIG = readUrlConfig();
+let WS_URL = hasDirectWs(URL_CONFIG)
+  ? URL_CONFIG.ws || `ws://${URL_CONFIG.wsHost}:${URL_CONFIG.wsPort}`
+  : "resolving…";
+
+const BPM_STALE_MS = 1000;
+
+let currentBpm = 0;
+let smoothedBpm = 0;
+let bpmSource = "websocket";
+let registryState = needsRegistryLookup(URL_CONFIG)
+  ? "resolving"
+  : hasDirectWs(URL_CONFIG)
+    ? "bypassed"
+    : "no token";
 let wsState = "disconnected";
 let pulseEnvelope = 0;
 let lastBeatMs = 0;
@@ -14,9 +65,11 @@ let wsInput;
 let sourceLabelEl;
 let bpmLabelEl;
 let wsLabelEl;
+let wsUrlLabelEl;
+let registryLabelEl;
 let debugPaneEl;
 let waveShader;
-let debugPaneVisible = true;
+let debugPaneVisible = false;
 
 const vertShader = `
 precision mediump float;
@@ -192,11 +245,30 @@ function setup() {
   sourceLabelEl = document.getElementById("sourceLabel");
   bpmLabelEl = document.getElementById("bpmLabel");
   wsLabelEl = document.getElementById("wsLabel");
+  wsUrlLabelEl = document.getElementById("wsUrlLabel");
+  registryLabelEl = document.getElementById("registryLabel");
   debugPaneEl = document.getElementById("debugPane");
 
   simulator = new HeartRateSimulator();
   wsInput = new HeartRateWebSocket(WS_URL);
   simulator.start();
+
+  if (needsRegistryLookup(URL_CONFIG)) {
+    lookupDeviceEndpoint(URL_CONFIG)
+      .then((url) => {
+        WS_URL = url;
+        wsInput.setUrl(url);
+        wsInput.connect();
+        registryState = "ok";
+        updateHud();
+      })
+      .catch((err) => {
+        registryState = err.message || "failed";
+        updateHud();
+      });
+  } else if (hasDirectWs(URL_CONFIG)) {
+    wsInput.connect();
+  }
 
   waveShader = createShader(vertShader, fragShader);
   updateHud();
@@ -231,14 +303,15 @@ function updateHeartRate() {
   if (bpmSource === "simulation") {
     const simulated = simulator.getValue();
     const mouseControlled = map(mouseX, 0, width, 0, 400, true);
-    // 在 simulation 模式下，按住鼠标可手动控制合并心率
+    // 在 simulation 模式下，按住鼠标可手动控制心率
     nextBpm = mouseIsPressed ? mouseControlled : simulated;
   } else {
-    nextBpm = wsInput.getValue(currentBpm);
+    nextBpm = wsInput.getValue();
   }
 
   currentBpm = constrain(nextBpm, 0, 400);
-  smoothedBpm = lerp(smoothedBpm, currentBpm, 0.08);
+  const smoothFactor = currentBpm === 0 ? 0.25 : 0.08;
+  smoothedBpm = lerp(smoothedBpm, currentBpm, smoothFactor);
 
   if (smoothedBpm >= 1) {
     const beatIntervalMs = 60000 / smoothedBpm;
@@ -291,10 +364,16 @@ function createDebugPane() {
     <div>Source: <strong id="sourceLabel">simulation</strong></div>
     <div>BPM: <strong id="bpmLabel">--</strong></div>
     <div>WS: <strong id="wsLabel">disconnected</strong></div>
+    <div>Endpoint: <strong id="wsUrlLabel">--</strong></div>
+    <div>Registry: <strong id="registryLabel">idle</strong></div>
     <div style="margin-top:6px; font-size:12px; opacity:0.85;">
       W: source | K: save | Space: pause | D: debug
     </div>
+    <div style="font-size:11px; opacity:0.75;">
+      Override: ?wsHost=&lt;ip&gt; | W: simulation
+    </div>
   `;
+  pane.style.display = debugPaneVisible ? "block" : "none";
   document.body.appendChild(pane);
 }
 
@@ -314,6 +393,8 @@ function updateHud() {
   bpmLabelEl.textContent = `${smoothedBpm.toFixed(1)} bpm`;
   wsState = wsInput.getState();
   wsLabelEl.textContent = bpmSource === "websocket" ? wsState : "idle";
+  if (wsUrlLabelEl) wsUrlLabelEl.textContent = WS_URL;
+  if (registryLabelEl) registryLabelEl.textContent = registryState;
 }
 
 function windowResized() {
@@ -322,12 +403,9 @@ function windowResized() {
 
 class HeartRateSimulator {
   constructor() {
-    this.baseA = 70;
-    this.baseB = 72;
-    this.breathPhaseA = random(0, TWO_PI);
-    this.breathPhaseB = random(0, TWO_PI);
-    this.noiseSeedA = random(0, 5000);
-    this.noiseSeedB = random(5000, 10000);
+    this.base = 72;
+    this.breathPhase = random(0, TWO_PI);
+    this.noiseSeed = random(0, 5000);
     this.active = false;
   }
 
@@ -336,24 +414,18 @@ class HeartRateSimulator {
   }
 
   getValue() {
-    if (!this.active) return this.baseA + this.baseB;
+    if (!this.active) return this.base;
 
-    this.breathPhaseA += 0.011;
-    this.breathPhaseB += 0.013;
+    this.breathPhase += 0.012;
 
-    const driftA = sin(this.breathPhaseA) * 8.0;
-    const driftB = sin(this.breathPhaseB) * 7.5;
-    const noiseA = (noise(this.noiseSeedA + frameCount * 0.006) - 0.5) * 10.0;
-    const noiseB = (noise(this.noiseSeedB + frameCount * 0.0055) - 0.5) * 10.0;
-    const spikeA = noise(this.noiseSeedA + frameCount * 0.015) > 0.993 ? random(8, 18) : 0;
-    const spikeB = noise(this.noiseSeedB + frameCount * 0.014) > 0.993 ? random(8, 18) : 0;
+    const drift = sin(this.breathPhase) * 7.0;
+    const noiseVal = (noise(this.noiseSeed + frameCount * 0.006) - 0.5) * 10.0;
+    const spike = noise(this.noiseSeed + frameCount * 0.015) > 0.993 ? random(8, 18) : 0;
 
-    const targetA = 70 + driftA + noiseA + spikeA;
-    const targetB = 72 + driftB + noiseB + spikeB;
-    this.baseA = lerp(this.baseA, targetA, 0.09);
-    this.baseB = lerp(this.baseB, targetB, 0.09);
+    const target = 72 + drift + noiseVal + spike;
+    this.base = lerp(this.base, target, 0.09);
 
-    return this.baseA + this.baseB;
+    return this.base;
   }
 }
 
@@ -362,11 +434,32 @@ class HeartRateWebSocket {
     this.url = url;
     this.socket = null;
     this.latest = null;
+    this.lastReceivedMs = 0;
     this.state = "disconnected";
+    this.wantConnection = false;
+    this.reconnectTimer = null;
+  }
+
+  setUrl(url) {
+    const wasConnected = this.wantConnection;
+    this.disconnect();
+    this.url = url;
+    if (wasConnected) this.connect();
   }
 
   connect() {
+    this.wantConnection = true;
+    this.openSocket();
+  }
+
+  openSocket() {
     if (this.socket && this.socket.readyState <= 1) return;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     this.socket = new WebSocket(this.url);
     this.state = "connecting";
 
@@ -375,27 +468,22 @@ class HeartRateWebSocket {
     };
     this.socket.onclose = () => {
       this.state = "disconnected";
+      this.socket = null;
+      if (this.wantConnection) {
+        this.reconnectTimer = setTimeout(() => this.openSocket(), 2000);
+      }
     };
     this.socket.onerror = () => {
       this.state = "error";
     };
 
-    // ESP32 接入点（双传感器）：
-    // 推荐 {"bpm1": 78, "bpm2": 81} 或 {"sensorA": 78, "sensorB": 81}
-    // 兼容 {"bpm": 159}（已求和）
+    // ESP32 single sensor: {"bpm": 72, "source": "esp32", "ts": 123456789}
     this.socket.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
-        const hasPairA = typeof payload.bpm1 === "number" && typeof payload.bpm2 === "number";
-        const hasPairB = typeof payload.sensorA === "number" && typeof payload.sensorB === "number";
-
-        if (hasPairA) {
-          this.latest = payload.bpm1 + payload.bpm2;
-        } else if (hasPairB) {
-          this.latest = payload.sensorA + payload.sensorB;
-        } else if (typeof payload.bpm === "number") {
-          this.latest = payload.bpm;
-        }
+        if (typeof payload.bpm !== "number") return;
+        this.lastReceivedMs = Date.now();
+        this.latest = payload.bpm > 0 ? payload.bpm : 0;
       } catch (err) {
         this.state = "bad_data";
       }
@@ -403,15 +491,28 @@ class HeartRateWebSocket {
   }
 
   disconnect() {
+    this.wantConnection = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.socket) {
       this.socket.close();
       this.socket = null;
     }
+    this.latest = null;
+    this.lastReceivedMs = 0;
     this.state = "disconnected";
   }
 
-  getValue(fallback) {
-    return typeof this.latest === "number" ? this.latest : fallback;
+  isStale() {
+    if (this.lastReceivedMs === 0) return true;
+    return Date.now() - this.lastReceivedMs > BPM_STALE_MS;
+  }
+
+  getValue() {
+    if (this.isStale()) return 0;
+    return typeof this.latest === "number" ? this.latest : 0;
   }
 
   getState() {
