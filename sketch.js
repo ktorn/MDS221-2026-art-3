@@ -1,6 +1,6 @@
 const APP_SECRETS = window.APP_SECRETS || {};
 const REGISTRY_BASE_URL =
-  APP_SECRETS.registryBaseUrl || "https://esp-device-registry.ktorn.workers.dev";
+  APP_SECRETS.registryBaseUrl || "https://esp-device-registry.xxx.workers.dev";
 const DEFAULT_DEVICE_ID = APP_SECRETS.deviceId || "MDS221-2026-3";
 
 function readUrlConfig() {
@@ -44,7 +44,9 @@ let WS_URL = hasDirectWs(URL_CONFIG)
   ? URL_CONFIG.ws || `ws://${URL_CONFIG.wsHost}:${URL_CONFIG.wsPort}`
   : "resolving…";
 
-const BPM_STALE_MS = 1000;
+const RECEIVE_WINDOW = 5;
+const MIN_EXPECTED_INTERVAL_MS = 150;
+const RECEIVE_DEDUPE_MS = 50;
 
 let currentBpm = 0;
 let smoothedBpm = 0;
@@ -310,8 +312,12 @@ function updateHeartRate() {
   }
 
   currentBpm = constrain(nextBpm, 0, 400);
-  const smoothFactor = currentBpm === 0 ? 0.25 : 0.08;
-  smoothedBpm = lerp(smoothedBpm, currentBpm, smoothFactor);
+  if (bpmSource === "websocket") {
+    smoothedBpm = currentBpm;
+  } else {
+    const smoothFactor = currentBpm === 0 ? 0.25 : 0.08;
+    smoothedBpm = lerp(smoothedBpm, currentBpm, smoothFactor);
+  }
 
   if (smoothedBpm >= 1) {
     const beatIntervalMs = 60000 / smoothedBpm;
@@ -390,7 +396,7 @@ function toggleSource() {
 function updateHud() {
   if (!sourceLabelEl || !bpmLabelEl || !wsLabelEl) return;
   sourceLabelEl.textContent = bpmSource;
-  bpmLabelEl.textContent = `${smoothedBpm.toFixed(1)} bpm`;
+  bpmLabelEl.textContent = `${Math.round(currentBpm)} bpm`;
   wsState = wsInput.getState();
   wsLabelEl.textContent = bpmSource === "websocket" ? wsState : "idle";
   if (wsUrlLabelEl) wsUrlLabelEl.textContent = WS_URL;
@@ -435,6 +441,7 @@ class HeartRateWebSocket {
     this.socket = null;
     this.latest = null;
     this.lastReceivedMs = 0;
+    this.receiveTimes = [];
     this.state = "disconnected";
     this.wantConnection = false;
     this.reconnectTimer = null;
@@ -482,8 +489,8 @@ class HeartRateWebSocket {
       try {
         const payload = JSON.parse(event.data);
         if (typeof payload.bpm !== "number") return;
-        this.lastReceivedMs = Date.now();
-        this.latest = payload.bpm > 0 ? payload.bpm : 0;
+        this.noteReceive();
+        this.latest = payload.bpm > 0 ? Math.round(payload.bpm) : 0;
       } catch (err) {
         this.state = "bad_data";
       }
@@ -502,12 +509,38 @@ class HeartRateWebSocket {
     }
     this.latest = null;
     this.lastReceivedMs = 0;
+    this.receiveTimes = [];
     this.state = "disconnected";
+  }
+
+  noteReceive() {
+    const now = Date.now();
+    this.lastReceivedMs = now;
+    const last = this.receiveTimes[this.receiveTimes.length - 1];
+    if (last !== undefined && now - last < RECEIVE_DEDUPE_MS) return;
+    this.receiveTimes.push(now);
+    if (this.receiveTimes.length > RECEIVE_WINDOW) {
+      this.receiveTimes.shift();
+    }
+  }
+
+  averageIntervalMs() {
+    if (this.receiveTimes.length < 2) return MIN_EXPECTED_INTERVAL_MS;
+    let sum = 0;
+    let count = 0;
+    for (let i = 1; i < this.receiveTimes.length; i++) {
+      const delta = this.receiveTimes[i] - this.receiveTimes[i - 1];
+      if (delta < RECEIVE_DEDUPE_MS) continue;
+      sum += delta;
+      count++;
+    }
+    if (count === 0) return MIN_EXPECTED_INTERVAL_MS;
+    return sum / count;
   }
 
   isStale() {
     if (this.lastReceivedMs === 0) return true;
-    return Date.now() - this.lastReceivedMs > BPM_STALE_MS;
+    return Date.now() - this.lastReceivedMs > this.averageIntervalMs();
   }
 
   getValue() {

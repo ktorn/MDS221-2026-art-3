@@ -203,8 +203,11 @@ static void registerWithCloud() {
 }
 
 static void broadcastBpm(int bpm) {
+  if (bpm <= 0) return;
   String msg = String("{\"bpm\":") + bpm + ",\"source\":\"esp32\",\"ts\":" + millis() + "}";
   webSocket.broadcastTXT(msg);
+  Serial.print("BPM: ");
+  Serial.println(bpm);
 }
 
 void setup() {
@@ -241,22 +244,10 @@ void loop() {
 
   sensorCodeUpdate();
 
-  if (sensorCodeSawBeat()) {
-    int bpm = sensorCodeGetBpm();
-    Serial.print("Heart BPM: ");
-    Serial.println(bpm);
-    if (bpm > 0) {
-      broadcastBpm(bpm);
-    }
-  }
-
   static unsigned long lastSend = 0;
   if (millis() - lastSend > BPM_SEND_INTERVAL_MS) {
     lastSend = millis();
-    int bpm = sensorCodeGetBpm();
-    if (bpm > 0) {
-      broadcastBpm(bpm);
-    }
+    broadcastBpm(sensorCodeGetBpm());
   }
 
   if (REGISTER_BASE_URL && REGISTER_BASE_URL[0] && REGISTER_SECRET &&
