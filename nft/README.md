@@ -1,4 +1,4 @@
-# Heart Wave — Teia mint bundle
+# Dual Rhythm — Teia mint bundle
 
 Offline interactive OBJKT for [teia.art/mint](https://teia.art/mint).
 

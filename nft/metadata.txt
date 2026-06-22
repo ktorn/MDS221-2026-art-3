@@ -1,12 +1,14 @@
-Title: Heart Wave
+Title: Dual Rhythm
 
-Creators: Filipe Farinha, Yangtong Zheng, Kequan Chen, Duoduo Huang
+Creators: Kieran, Yvan, Effie, Delfina
 
-Tags: interactive, generative, p5js, shader, heart-rate, waves, MDS221, USJ
+Tags: interactive, generative, p5js, shader, heart-rate, waves, MDS221, USJ, Teia
 
 Description:
 
-Heart Wave is a generative audiovisual field driven by pulse. Layered topographic lines flow like water over a deep black ground, coloured in rose, plum, and earth tones (#8C162C, #D95276, #8C4579, #8C4535, #592E25). Motion, brightness, and beat-synchronized pulses respond to an internal heart-rate signal.
+Using heartbeats as a medium, Dual Rhythm transforms the invisible psychological distance, sense of security, and familiarity between people into visual effects — making intangible emotions and relationships a viewable and interactive experience, and exploring the real physical reactions of intimacy and alienation.
+
+Layered topographic lines flow like water over a deep black ground, coloured in rose, plum, and earth tones. Motion, brightness, and beat-synchronized pulses respond to heart rate.
 
 How to interact:
 - Click or tap the canvas, then drag left/right to set heart rate (0–400 BPM). Release to return to the automatic resting rhythm (~72 BPM with gentle variation).
