@@ -1,0 +1,19 @@
+Title: Heart Wave
+
+Creators: Filipe Farinha, Yangtong Zheng, Kequan Chen, Duoduo Huang
+
+Tags: interactive, generative, p5js, shader, heart-rate, waves, MDS221, USJ
+
+Description:
+
+Heart Wave is a generative audiovisual field driven by pulse. Layered topographic lines flow like water over a deep black ground, coloured in rose, plum, and earth tones (#8C162C, #D95276, #8C4579, #8C4535, #592E25). Motion, brightness, and beat-synchronized pulses respond to an internal heart-rate signal.
+
+How to interact:
+- Click or tap the canvas, then drag left/right to set heart rate (0–400 BPM). Release to return to the automatic resting rhythm (~72 BPM with gentle variation).
+- Space — pause / resume animation
+- K — save a screenshot (heart-wave.jpg)
+
+Default behaviour on load:
+The piece runs immediately with a simulated resting pulse near 72 BPM. Waves drift continuously; each beat triggers a brief expansion and twist in the field. No setup or external device is required.
+
+Class credit: MDS221 – Interactive Multimedia Installation, University of Saint Joseph (USJ), Macau.
